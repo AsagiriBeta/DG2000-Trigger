@@ -14,6 +14,7 @@ DG2000 USB 双通道输出示例（Python + PyVISA）
 
 from __future__ import annotations
 
+import argparse
 from dataclasses import dataclass
 from typing import Optional
 
@@ -71,6 +72,38 @@ def choose_resource(rm: pyvisa.ResourceManager, resource_name: str) -> str:
     return selected
 
 
+def print_visa_resources(rm: pyvisa.ResourceManager) -> tuple[str, ...]:
+    """打印当前可见的 VISA 资源，便于排查连接问题。"""
+    resources = rm.list_resources()
+    print("VISA 资源列表:")
+    if not resources:
+        print("  (空)")
+    else:
+        for idx, res in enumerate(resources, start=1):
+            print(f"  {idx}. {res}")
+    return resources
+
+
+def print_pyusb_devices() -> None:
+    """打印系统可见的 USB 设备摘要（需要 pyusb）。"""
+    try:
+        import usb.core  # type: ignore
+    except Exception:
+        print("USB 设备摘要: 未安装 pyusb，跳过。")
+        return
+
+    devices = list(usb.core.find(find_all=True))
+    print("USB 设备摘要:")
+    if not devices:
+        print("  (未发现可枚举 USB 设备)")
+        return
+
+    for dev in devices:
+        vid = f"0x{dev.idVendor:04x}"
+        pid = f"0x{dev.idProduct:04x}"
+        print(f"  VID={vid}, PID={pid}")
+
+
 def query_idn(dev) -> str:
     return dev.query("*IDN?").strip()
 
@@ -106,10 +139,33 @@ def setup_outputs(dev, cfg: Config) -> None:
     dev.write(":OUTP2 ON")
 
 
-def run(cfg: Optional[Config] = None) -> None:
+def stop_outputs(dev) -> None:
+    """关闭两个通道输出。"""
+    dev.write(":OUTP1 OFF")
+    dev.write(":OUTP2 OFF")
+
+
+def start_outputs(dev) -> None:
+    """开启两个通道输出。"""
+    dev.write(":OUTP1 ON")
+    dev.write(":OUTP2 ON")
+
+
+def try_return_to_local(dev) -> None:
+    """尝试释放远程控制，恢复面板可操作状态。"""
+    # 不同型号命令兼容性有差异，逐个尝试，失败不影响主流程。
+    for cmd in (":SYST:KLOC OFF", ":SYST:LOC", "SYST:KLOC OFF", "SYST:LOC"):
+        try:
+            dev.write(cmd)
+        except Exception:
+            continue
+
+
+def run(cfg: Optional[Config] = None, stop_only: bool = False) -> None:
     cfg = cfg or Config()
 
     rm = pyvisa.ResourceManager()
+    print_visa_resources(rm)
     resource = choose_resource(rm, cfg.resource_name)
 
     dev = rm.open_resource(resource)
@@ -126,30 +182,70 @@ def run(cfg: Optional[Config] = None) -> None:
         if cfg.do_reset:
             dev.write("*RST")
 
-        setup_outputs(dev, cfg)
-
-        print(
-            f"CH1 正弦波已开启: f={cfg.ch1_freq_hz:.3f} Hz, "
-            f"Vpp={cfg.ch1_vpp:.3f} V, Offset={cfg.ch1_offset_v:.3f} V"
-        )
-        print(
-            f"CH2 脉冲已开启: f={cfg.ch2_pulse_freq_hz:.3f} Hz, "
-            f"Width={cfg.ch2_pulse_width_s:.6g} s, "
-            f"Low={cfg.ch2_low_v:.3f} V, High={cfg.ch2_high_v:.3f} V"
-        )
+        if stop_only:
+            stop_outputs(dev)
+            print("已停止 CH1/CH2 输出。")
+        else:
+            setup_outputs(dev, cfg)
+            print(
+                f"CH1 正弦波已开启: f={cfg.ch1_freq_hz:.3f} Hz, "
+                f"Vpp={cfg.ch1_vpp:.3f} V, Offset={cfg.ch1_offset_v:.3f} V"
+            )
+            print(
+                f"CH2 脉冲已开启: f={cfg.ch2_pulse_freq_hz:.3f} Hz, "
+                f"Width={cfg.ch2_pulse_width_s:.6g} s, "
+                f"Low={cfg.ch2_low_v:.3f} V, High={cfg.ch2_high_v:.3f} V"
+            )
 
         err = dev.query(":SYST:ERR?").strip()
         print(f"设备状态: {err}")
 
     finally:
+        try_return_to_local(dev)
         # 始终释放资源，避免 VISA 占用
         dev.close()
         rm.close()
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="DG2000 双通道输出控制脚本")
+    parser.add_argument(
+        "--list",
+        action="store_true",
+        help="仅打印可发现的 VISA 资源和 USB 设备摘要，不下发 SCPI 命令。",
+    )
+    parser.add_argument(
+        "--stop",
+        action="store_true",
+        help="停止 CH1/CH2 输出（用户手动停止）。",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
+    args = parse_args()
     try:
-        run()
+        if args.list:
+            rm = pyvisa.ResourceManager()
+            try:
+                print_visa_resources(rm)
+            finally:
+                rm.close()
+            print_pyusb_devices()
+            raise SystemExit(0)
+
+        run(Config(), stop_only=args.stop)
     except Exception as exc:
         print(f"执行失败: {exc}")
+        print("以下为诊断信息:")
+        try:
+            rm_diag = pyvisa.ResourceManager()
+            try:
+                print_visa_resources(rm_diag)
+            finally:
+                rm_diag.close()
+        except Exception as diag_exc:
+            print(f"VISA 资源诊断失败: {diag_exc}")
+
+        print_pyusb_devices()
         print("建议检查: Python 依赖、VISA 运行库、USB 连接、resource_name 是否正确。")
