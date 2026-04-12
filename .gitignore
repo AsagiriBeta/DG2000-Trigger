@@ -1,1 +1,64 @@
-/__pycache__
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# --- 虚拟环境 / 本地配置 ---
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+ENV/
+
+# --- 打包与构建（PyInstaller / setuptools）---
+build/
+dist/
+*.egg-info/
+.eggs/
+develop-eggs/
+downloads/
+eggs/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+pip-wheel-metadata/
+*.manifest
+
+# --- 测试与类型检查缓存 ---
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- 操作系统 ---
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# --- 编辑器（本地配置，不上传）---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- 日志与临时文件 ---
+*.log
+*.tmp
+*.temp

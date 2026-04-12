@@ -1,5 +1,3 @@
-"""兼容入口：请优先使用 ``python -m dg2000_trigger``。"""
-
 from dg2000_trigger.app import main
 
 if __name__ == "__main__":
