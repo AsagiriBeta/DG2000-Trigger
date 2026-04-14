@@ -11,8 +11,9 @@ class OutputConfig:
     ch1_vpp: float
     ch1_offset_v: float
     ch1_phase_deg: float
-    ch2_pulse_freq_hz: float
     ch2_pulse_width_s: float
     ch2_low_v: float
     ch2_high_v: float
+    ch2_delay_s: float
+    ch2_idle_level: str
     output_load: str

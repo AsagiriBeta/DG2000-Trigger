@@ -80,6 +80,8 @@ class MainWindow(QMainWindow):
         self.disconnect_btn.clicked.connect(self._worker.close_connection)
         self.idn_btn.clicked.connect(self._worker.query_idn)
         self.stop_btn.clicked.connect(self._on_stop_clicked)
+        self.test_pulse_btn.clicked.connect(self._on_test_pulse_clicked)
+        self.test_square_btn.clicked.connect(self._on_test_square_clicked)
         self.local_btn.clicked.connect(self._worker.return_to_local)
 
         self.apply_btn.clicked.connect(self.start_cycle)
@@ -145,25 +147,30 @@ class MainWindow(QMainWindow):
 
         ch2_group = QGroupBox("CH2 脉冲")
         ch2_form = QFormLayout(ch2_group)
-        self.ch2_freq = self._double(1000.0, 0.001, 1e9, 3)
         self.ch2_width = self._double(100e-6, 1e-9, 10.0, 9)
+        self.ch2_delay = self._double(0.0, 0.0, 10.0, 9)
         self.ch2_low = self._double(0.0, -10.0, 10.0, 3)
         self.ch2_high = self._double(5.0, -10.0, 10.0, 3)
-        ch2_form.addRow("频率 Hz", self.ch2_freq)
+        self.ch2_idle_combo = QComboBox()
+        self.ch2_idle_combo.addItems(["BOTT", "TOP"])
+        self.ch2_idle_combo.setCurrentText("BOTT")
         ch2_form.addRow("脉宽 s", self.ch2_width)
+        ch2_form.addRow("触发延时 s", self.ch2_delay)
         ch2_form.addRow("低电平 V", self.ch2_low)
         ch2_form.addRow("高电平 V", self.ch2_high)
+        ch2_form.addRow("空闲电平", self.ch2_idle_combo)
 
         common_group = QGroupBox("公共")
         common_form = QFormLayout(common_group)
         self.load_combo = QComboBox()
         self.load_combo.addItems(["INF", "50"])
         self.load_combo.setCurrentText("INF")
-        self.on_time_s = self._double(1.0, 0.001, 3600.0, 3)
-        self.off_time_s = self._double(1.0, 0.001, 3600.0, 3)
+        self.cycle_period_s = self._double(2.0, 0.001, 3600.0, 3)
+        self.sine_ratio_pct = self._double(50.0, 0.0, 100.0, 1)
+        self.sine_ratio_pct.setSuffix(" %")
         common_form.addRow("输出负载", self.load_combo)
-        common_form.addRow("发波时长 s", self.on_time_s)
-        common_form.addRow("停波时长 s", self.off_time_s)
+        common_form.addRow("周期时长 s", self.cycle_period_s)
+        common_form.addRow("正弦段占比", self.sine_ratio_pct)
 
         layout.addWidget(ch1_group)
         layout.addWidget(ch2_group)
@@ -177,10 +184,14 @@ class MainWindow(QMainWindow):
 
         self.apply_btn = QPushButton("开始循环输出")
         self.stop_btn = QPushButton("停止循环并关输出")
+        self.test_pulse_btn = QPushButton("CH2 单脉冲测试")
+        self.test_square_btn = QPushButton("CH2 连续方波测试")
         self.local_btn = QPushButton("切回本地面板")
 
         layout.addWidget(self.apply_btn)
         layout.addWidget(self.stop_btn)
+        layout.addWidget(self.test_pulse_btn)
+        layout.addWidget(self.test_square_btn)
         layout.addWidget(self.local_btn)
         return box
 
@@ -263,10 +274,11 @@ class MainWindow(QMainWindow):
             ch1_vpp=self.ch1_vpp.value(),
             ch1_offset_v=self.ch1_offset.value(),
             ch1_phase_deg=self.ch1_phase.value(),
-            ch2_pulse_freq_hz=self.ch2_freq.value(),
             ch2_pulse_width_s=self.ch2_width.value(),
             ch2_low_v=self.ch2_low.value(),
             ch2_high_v=self.ch2_high.value(),
+            ch2_delay_s=self.ch2_delay.value(),
+            ch2_idle_level=self.ch2_idle_combo.currentText(),
             output_load=self.load_combo.currentText(),
         )
 
@@ -275,9 +287,22 @@ class MainWindow(QMainWindow):
         if not self._require_connected():
             return
         cfg = self._read_config()
-        on_ms = max(1, int(self.on_time_s.value() * 1000))
-        off_ms = max(1, int(self.off_time_s.value() * 1000))
+        on_ms, off_ms = self._calc_cycle_ms()
         self.cycle_prepare_requested.emit(cfg, on_ms, off_ms)
+
+    def _calc_cycle_ms(self) -> tuple[int, int]:
+        period_ms = max(1, int(self.cycle_period_s.value() * 1000))
+        ratio = self.sine_ratio_pct.value() / 100.0
+        on_ms = int(period_ms * ratio)
+        off_ms = period_ms - on_ms
+        # 避免 0ms 定时导致无法观察切换；极端占比时强制最小 1ms。
+        if on_ms <= 0:
+            on_ms = 1
+            off_ms = max(1, period_ms - on_ms)
+        elif off_ms <= 0:
+            off_ms = 1
+            on_ms = max(1, period_ms - off_ms)
+        return on_ms, off_ms
 
     def _require_connected(self) -> bool:
         if not self._instrument_connected:
@@ -296,7 +321,7 @@ class MainWindow(QMainWindow):
     def _on_cycle_started(self, line: str) -> None:
         self._cycle_running = True
         self._cycle_outputs_on = True
-        on_ms = max(1, int(self.on_time_s.value() * 1000))
+        on_ms, _ = self._calc_cycle_ms()
         self._cycle_timer.start(on_ms)
         self._append_log(line)
 
@@ -304,8 +329,7 @@ class MainWindow(QMainWindow):
     def _on_cycle_timer(self) -> None:
         if not self._cycle_running:
             return
-        on_ms = max(1, int(self.on_time_s.value() * 1000))
-        off_ms = max(1, int(self.off_time_s.value() * 1000))
+        on_ms, off_ms = self._calc_cycle_ms()
         self.cycle_edge_requested.emit(self._cycle_outputs_on, on_ms, off_ms)
 
     @Slot(bool, int, str)
@@ -328,7 +352,31 @@ class MainWindow(QMainWindow):
             return
         self._cycle_running = False
         self._cycle_timer.stop()
-        self._worker.stop_cycle_outputs()
+        QMetaObject.invokeMethod(
+            self._worker,
+            "stop_cycle_outputs",
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    @Slot()
+    def _on_test_pulse_clicked(self) -> None:
+        if not self._require_connected():
+            return
+        QMetaObject.invokeMethod(
+            self._worker,
+            "test_ch2_pulse",
+            Qt.ConnectionType.QueuedConnection,
+        )
+
+    @Slot()
+    def _on_test_square_clicked(self) -> None:
+        if not self._require_connected():
+            return
+        QMetaObject.invokeMethod(
+            self._worker,
+            "test_ch2_square",
+            Qt.ConnectionType.QueuedConnection,
+        )
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
         self._cycle_running = False

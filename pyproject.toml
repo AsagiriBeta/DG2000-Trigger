@@ -6,6 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "dg2000-trigger"
 version = "0.2.0"
 description = "DG2000 波形发生器触发与循环输出控制（PySide6 + PyVISA）"
+readme = "README.md"
 requires-python = ">=3.9"
 dependencies = [
   "pyvisa>=1.14.0",

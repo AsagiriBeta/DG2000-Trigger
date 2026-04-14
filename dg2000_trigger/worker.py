@@ -9,6 +9,7 @@ from pyvisa.resources import MessageBasedResource
 
 from dg2000_trigger.models import OutputConfig
 from dg2000_trigger.scpi import (
+    configure_ch1_burst_cycle,
     configure_outputs,
     format_cycle_start_log,
     try_emit_single_pulse,
@@ -44,6 +45,65 @@ class VisaWorker(QObject):
         self._rm: Optional[pyvisa.ResourceManager] = None
         self._dev: Optional[MessageBasedResource] = None
         self._cycle_active = False
+        self._cycle_cfg: Optional[OutputConfig] = None
+
+    def _emit_ch2_single_pulse(
+        self, dev: MessageBasedResource, cfg: Optional[OutputConfig] = None
+    ) -> None:
+        """触发前重申 CH2 burst 触发配置，兼容部分机型状态丢失。"""
+        dev.write(":OUTP2 ON")
+        dev.write(":SOUR2:FUNC PULS")
+        dev.write(":SOUR2:FREQ 1000")
+        if cfg is not None:
+            dev.write(f":SOUR2:PULS:WIDT {cfg.ch2_pulse_width_s:.12g}")
+            dev.write(f":SOUR2:PULS:DEL {cfg.ch2_delay_s:.12g}")
+            dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
+            dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
+        else:
+            dev.write(":SOUR2:PULS:WIDT 0.001")
+            dev.write(":SOUR2:PULS:DEL 0")
+            dev.write(":SOUR2:VOLT:LOW 0")
+            dev.write(":SOUR2:VOLT:HIGH 5")
+        dev.write(":SOUR2:BURS:STAT ON")
+        dev.write(":SOUR2:BURS:MODE TRIG")
+        dev.write(":SOUR2:BURS:NCYC 1")
+        if cfg is not None:
+            try:
+                dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
+            except Exception:
+                pass
+        for cmd in (":SOUR2:BURS:TRIG:SOUR MAN",):
+            try:
+                dev.write(cmd)
+                break
+            except Exception:
+                continue
+        try_emit_single_pulse(dev)
+
+    def _clear_error_queue(self, dev: MessageBasedResource) -> None:
+        for _ in range(6):
+            err = self._query_safe(dev, ":SYST:ERR?")
+            if err.startswith("0,") or err.startswith("+0,"):
+                break
+
+    def _query_safe(self, dev: MessageBasedResource, cmd: str) -> str:
+        try:
+            return dev.query(cmd).strip()
+        except Exception as exc:
+            return f"<ERR {exc}>"
+
+    def _log_ch2_state(self, dev: MessageBasedResource, prefix: str) -> None:
+        parts = [
+            f"OUTP2={self._query_safe(dev, ':OUTP2?')}",
+            f"FUNC={self._query_safe(dev, ':SOUR2:FUNC?')}",
+            f"BURS={self._query_safe(dev, ':SOUR2:BURS:STAT?')}",
+            f"MODE={self._query_safe(dev, ':SOUR2:BURS:MODE?')}",
+            f"TRIGSRC={self._query_safe(dev, ':SOUR2:BURS:TRIG:SOUR?')}",
+            f"LOW={self._query_safe(dev, ':SOUR2:VOLT:LOW?')}",
+            f"HIGH={self._query_safe(dev, ':SOUR2:VOLT:HIGH?')}",
+            f"ERR={self._query_safe(dev, ':SYST:ERR?')}",
+        ]
+        self.log_line.emit(f"{prefix}: " + ", ".join(parts))
 
     @Slot()
     def scan_resources(self) -> None:
@@ -95,6 +155,7 @@ class VisaWorker(QObject):
         finally:
             self._dev = None
             self._cycle_active = False
+            self._cycle_cfg = None
             self.connection_result.emit(False, "", "")
 
     @Slot()
@@ -120,43 +181,97 @@ class VisaWorker(QObject):
             return
         cfg = cfg_obj
         self._cycle_active = True
+        self._cycle_cfg = cfg
         try:
             configure_outputs(self._dev, cfg)
-            self._dev.write(":OUTP1 ON")
-            self._dev.write(":OUTP2 ON")
-            try_emit_single_pulse(self._dev)
-            err = self._dev.query(":SYST:ERR?").strip()
             on_s = on_ms / 1000.0
             off_s = off_ms / 1000.0
-            self.cycle_started.emit(format_cycle_start_log(cfg, on_s, off_s, err))
+            ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
+                self._dev, cfg, on_s, off_s
+            )
+            self._dev.write(":OUTP1 ON")
+            self._emit_ch2_single_pulse(self._dev, cfg)
+            err = self._dev.query(":SYST:ERR?").strip()
+            self.cycle_started.emit(
+                format_cycle_start_log(cfg, actual_on_s, max(0.0, actual_period_s - actual_on_s), err)
+                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s"
+            )
         except Exception as exc:
             self._cycle_active = False
+            self._cycle_cfg = None
             log.exception("启动循环失败")
             self.cycle_prepare_failed.emit(str(exc))
 
     @Slot(bool, int, int)
     def apply_cycle_edge(self, outputs_on: bool, on_ms: int, off_ms: int) -> None:
         dev = self._dev
-        if dev is None or not self._cycle_active:
+        cfg = self._cycle_cfg
+        if dev is None or not self._cycle_active or cfg is None:
             return
         try:
             if outputs_on:
-                dev.write(":OUTP1 OFF")
-                dev.write(":OUTP2 OFF")
-                self.cycle_edge_done.emit(False, off_ms, "周期切换: 停波。")
+                self.cycle_edge_done.emit(False, off_ms, "周期切换: 停波段（CH1 由 Burst 内部时序控制）。")
             else:
-                dev.write(":OUTP1 ON")
-                dev.write(":OUTP2 ON")
-                try_emit_single_pulse(dev)
-                self.cycle_edge_done.emit(True, on_ms, "周期切换: 发波。")
+                on_s = on_ms / 1000.0
+                off_s = off_ms / 1000.0
+                ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
+                    dev, cfg, on_s, off_s
+                )
+                self._emit_ch2_single_pulse(dev, cfg)
+                self.cycle_edge_done.emit(
+                    True,
+                    on_ms,
+                    (
+                        "周期切换: 发波段（CH2 已触发）。"
+                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s"
+                    ),
+                )
         except Exception as exc:
             self._cycle_active = False
+            self._cycle_cfg = None
             log.exception("周期输出异常")
             self.cycle_edge_failed.emit(str(exc))
 
     @Slot()
+    def test_ch2_pulse(self) -> None:
+        """手动测试 CH2 是否能立即发出一次脉冲。"""
+        dev = self._dev
+        if dev is None:
+            self.dialog_warning.emit("未连接", "请先连接设备。")
+            return
+        try:
+            self._clear_error_queue(dev)
+            self._emit_ch2_single_pulse(dev)
+            self._log_ch2_state(dev, "CH2 单脉冲测试已触发")
+        except Exception as exc:
+            self.dialog_critical.emit("测试失败", str(exc))
+            self.log_line.emit(f"CH2 单脉冲测试失败: {exc}")
+
+    @Slot()
+    def test_ch2_square(self) -> None:
+        """输出可见连续方波，快速排查示波器量程/接线问题。"""
+        dev = self._dev
+        if dev is None:
+            self.dialog_warning.emit("未连接", "请先连接设备。")
+            return
+        try:
+            self._clear_error_queue(dev)
+            dev.write(":OUTP2 OFF")
+            dev.write(":SOUR2:BURS:STAT OFF")
+            dev.write(":SOUR2:FUNC SQU")
+            dev.write(":SOUR2:FREQ 2")
+            dev.write(":SOUR2:VOLT:LOW 0")
+            dev.write(":SOUR2:VOLT:HIGH 5")
+            dev.write(":OUTP2 ON")
+            self._log_ch2_state(dev, "CH2 连续方波测试(2Hz/0-5V)已启动")
+        except Exception as exc:
+            self.dialog_critical.emit("测试失败", str(exc))
+            self.log_line.emit(f"CH2 连续方波测试失败: {exc}")
+
+    @Slot()
     def stop_cycle_outputs(self) -> None:
         self._cycle_active = False
+        self._cycle_cfg = None
         if self._dev is None:
             self.dialog_warning.emit("未连接", "请先连接设备。")
             return
@@ -182,6 +297,7 @@ class VisaWorker(QObject):
     @Slot()
     def shutdown(self) -> None:
         self._cycle_active = False
+        self._cycle_cfg = None
         try:
             if self._dev is not None:
                 try:
