@@ -76,21 +76,19 @@ def configure_outputs(dev: ScpiWriter, cfg: OutputConfig) -> None:
 def configure_ch1_burst_cycle(
     dev: ScpiWriter, cfg: OutputConfig, on_s: float, off_s: float
 ) -> tuple[int, float, float]:
-    """将 CH1 配置为内部周期 Burst，避免通过 OUTP 反复开关。"""
+    """将 CH1 配置为手动触发 Burst；每次触发输出一段正弦。"""
     req_period_s = max(1e-6, on_s + off_s)
     freq = max(1e-9, cfg.ch1_freq_hz)
     req_cycles = max(1.0, on_s * freq)
     ncyc = max(1, int(math.floor(req_cycles + 0.5)))
     burst_on_s = ncyc / freq
-    burst_period_s = max(req_period_s, burst_on_s + 1e-6)
 
     dev.write(":SOUR1:BURS:MODE TRIG")
-    dev.write(":SOUR1:BURS:TRIG:SOUR INT")
+    dev.write(":SOUR1:BURS:TRIG:SOUR MAN")
     dev.write(f":SOUR1:BURS:NCYC {ncyc}")
-    dev.write(f":SOUR1:BURS:INT:PER {burst_period_s:.12g}")
     dev.write(":SOUR1:BURS:TDEL 0")
     dev.write(":SOUR1:BURS:STAT ON")
-    return ncyc, burst_on_s, burst_period_s
+    return ncyc, burst_on_s, req_period_s
 
 
 def format_cycle_start_log(cfg: OutputConfig, on_s: float, off_s: float, syst_err: str) -> str:

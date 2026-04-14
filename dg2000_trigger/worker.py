@@ -12,7 +12,6 @@ from dg2000_trigger.scpi import (
     configure_ch1_burst_cycle,
     configure_outputs,
     format_cycle_start_log,
-    try_emit_single_pulse,
     try_return_to_local,
 )
 
@@ -47,38 +46,33 @@ class VisaWorker(QObject):
         self._cycle_active = False
         self._cycle_cfg: Optional[OutputConfig] = None
 
-    def _emit_ch2_single_pulse(
-        self, dev: MessageBasedResource, cfg: Optional[OutputConfig] = None
-    ) -> None:
-        """触发前重申 CH2 burst 触发配置，兼容部分机型状态丢失。"""
+    def _arm_ch2_single_pulse(self, dev: MessageBasedResource, cfg: OutputConfig) -> None:
+        """重申 CH2 burst 配置，等待触发。"""
         dev.write(":OUTP2 ON")
         dev.write(":SOUR2:FUNC PULS")
         dev.write(":SOUR2:FREQ 1000")
-        if cfg is not None:
-            dev.write(f":SOUR2:PULS:WIDT {cfg.ch2_pulse_width_s:.12g}")
-            dev.write(f":SOUR2:PULS:DEL {cfg.ch2_delay_s:.12g}")
-            dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
-            dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
-        else:
-            dev.write(":SOUR2:PULS:WIDT 0.001")
-            dev.write(":SOUR2:PULS:DEL 0")
-            dev.write(":SOUR2:VOLT:LOW 0")
-            dev.write(":SOUR2:VOLT:HIGH 5")
+        dev.write(f":SOUR2:PULS:WIDT {cfg.ch2_pulse_width_s:.12g}")
+        dev.write(f":SOUR2:PULS:DEL {cfg.ch2_delay_s:.12g}")
+        dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
+        dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
         dev.write(":SOUR2:BURS:STAT ON")
         dev.write(":SOUR2:BURS:MODE TRIG")
         dev.write(":SOUR2:BURS:NCYC 1")
-        if cfg is not None:
-            try:
-                dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
-            except Exception:
-                pass
+        try:
+            dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
+        except Exception:
+            pass
         for cmd in (":SOUR2:BURS:TRIG:SOUR MAN",):
             try:
                 dev.write(cmd)
                 break
             except Exception:
                 continue
-        try_emit_single_pulse(dev)
+
+    def _trigger_cycle_start(self, dev: MessageBasedResource) -> None:
+        """显式触发 CH1/CH2 burst，兼容不同固件的全局触发行为差异。"""
+        dev.write(":SOUR1:BURS:TRIG")
+        dev.write(":SOUR2:BURS:TRIG")
 
     def _clear_error_queue(self, dev: MessageBasedResource) -> None:
         for _ in range(6):
@@ -190,11 +184,12 @@ class VisaWorker(QObject):
                 self._dev, cfg, on_s, off_s
             )
             self._dev.write(":OUTP1 ON")
-            self._emit_ch2_single_pulse(self._dev, cfg)
+            self._arm_ch2_single_pulse(self._dev, cfg)
+            self._trigger_cycle_start(self._dev)
             err = self._dev.query(":SYST:ERR?").strip()
             self.cycle_started.emit(
                 format_cycle_start_log(cfg, actual_on_s, max(0.0, actual_period_s - actual_on_s), err)
-                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s"
+                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s, TRIG=SHARED"
             )
         except Exception as exc:
             self._cycle_active = False
@@ -217,13 +212,14 @@ class VisaWorker(QObject):
                 ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
                     dev, cfg, on_s, off_s
                 )
-                self._emit_ch2_single_pulse(dev, cfg)
+                self._arm_ch2_single_pulse(dev, cfg)
+                self._trigger_cycle_start(dev)
                 self.cycle_edge_done.emit(
                     True,
                     on_ms,
                     (
                         "周期切换: 发波段（CH2 已触发）。"
-                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s"
+                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s, TRIG=SHARED"
                     ),
                 )
         except Exception as exc:
@@ -241,7 +237,24 @@ class VisaWorker(QObject):
             return
         try:
             self._clear_error_queue(dev)
-            self._emit_ch2_single_pulse(dev)
+            if self._cycle_cfg is not None:
+                self._arm_ch2_single_pulse(dev, self._cycle_cfg)
+            else:
+                # 测试按钮在未启动循环时仍使用安全默认值。
+                default_cfg = OutputConfig(
+                    ch1_freq_hz=1000.0,
+                    ch1_vpp=2.0,
+                    ch1_offset_v=0.0,
+                    ch1_phase_deg=0.0,
+                    ch2_pulse_width_s=0.001,
+                    ch2_low_v=0.0,
+                    ch2_high_v=5.0,
+                    ch2_delay_s=0.0,
+                    ch2_idle_level="BOTT",
+                    output_load="INF",
+                )
+                self._arm_ch2_single_pulse(dev, default_cfg)
+            dev.write(":SOUR2:BURS:TRIG")
             self._log_ch2_state(dev, "CH2 单脉冲测试已触发")
         except Exception as exc:
             self.dialog_critical.emit("测试失败", str(exc))
