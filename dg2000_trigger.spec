@@ -3,6 +3,8 @@
 # macOS 保持 upx=False；Windows 可尝试 upx=True（需本机安装 UPX，未安装则不影响构建）。
 # 依赖请使用 PySide6-Essentials（显著小于完整 PySide6）。
 
+import sys
+
 block_cipher = None
 is_win = sys.platform.startswith("win")
 
