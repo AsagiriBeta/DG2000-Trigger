@@ -47,7 +47,7 @@ class VisaWorker(QObject):
         self._cycle_cfg: Optional[OutputConfig] = None
 
     def _arm_ch2_single_pulse(self, dev: MessageBasedResource, cfg: OutputConfig) -> None:
-        """重申 CH2 burst 配置，等待触发。"""
+        """重申 CH2 burst 配置，等待外部触发。"""
         dev.write(":OUTP2 ON")
         dev.write(":SOUR2:FUNC PULS")
         dev.write(":SOUR2:FREQ 1000")
@@ -55,24 +55,27 @@ class VisaWorker(QObject):
         dev.write(f":SOUR2:PULS:DEL {cfg.ch2_delay_s:.12g}")
         dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
         dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
-        dev.write(":SOUR2:BURS:STAT ON")
+        dev.write(":SOUR2:BURS ON")
         dev.write(":SOUR2:BURS:MODE TRIG")
         dev.write(":SOUR2:BURS:NCYC 1")
         try:
             dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
         except Exception:
             pass
-        for cmd in (":SOUR2:BURS:TRIG:SOUR MAN",):
+        for cmd in (":SOUR2:BURS:TRIG:SOUR EXT",):
             try:
                 dev.write(cmd)
                 break
             except Exception:
                 continue
+        try:
+            dev.write(":SOUR2:BURS:TRIG:SLOP POS")
+        except Exception:
+            pass
 
     def _trigger_cycle_start(self, dev: MessageBasedResource) -> None:
-        """显式触发 CH1/CH2 burst，兼容不同固件的全局触发行为差异。"""
+        """显式触发 CH1 burst；CH2 由后面板外部触发输入联动。"""
         dev.write(":SOUR1:BURS:TRIG")
-        dev.write(":SOUR2:BURS:TRIG")
 
     def _clear_error_queue(self, dev: MessageBasedResource) -> None:
         for _ in range(6):
@@ -90,7 +93,7 @@ class VisaWorker(QObject):
         parts = [
             f"OUTP2={self._query_safe(dev, ':OUTP2?')}",
             f"FUNC={self._query_safe(dev, ':SOUR2:FUNC?')}",
-            f"BURS={self._query_safe(dev, ':SOUR2:BURS:STAT?')}",
+            f"BURS={self._query_safe(dev, ':SOUR2:BURS?')}",
             f"MODE={self._query_safe(dev, ':SOUR2:BURS:MODE?')}",
             f"TRIGSRC={self._query_safe(dev, ':SOUR2:BURS:TRIG:SOUR?')}",
             f"LOW={self._query_safe(dev, ':SOUR2:VOLT:LOW?')}",
@@ -186,10 +189,16 @@ class VisaWorker(QObject):
             self._dev.write(":OUTP1 ON")
             self._arm_ch2_single_pulse(self._dev, cfg)
             self._trigger_cycle_start(self._dev)
+            self.log_line.emit(
+                "触发链路配置: "
+                f"CH1_TRIGO={self._query_safe(self._dev, ':SOUR1:BURS:TRIG:TRIGO?')}, "
+                f"CH2_TRIG_SOUR={self._query_safe(self._dev, ':SOUR2:BURS:TRIG:SOUR?')}, "
+                f"CH2_TRIG_SLOP={self._query_safe(self._dev, ':SOUR2:BURS:TRIG:SLOP?')}"
+            )
             err = self._dev.query(":SYST:ERR?").strip()
             self.cycle_started.emit(
                 format_cycle_start_log(cfg, actual_on_s, max(0.0, actual_period_s - actual_on_s), err)
-                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s, TRIG=SHARED"
+                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s, TRIG=CH1->CH2(EXT)"
             )
         except Exception as exc:
             self._cycle_active = False
@@ -218,8 +227,8 @@ class VisaWorker(QObject):
                     True,
                     on_ms,
                     (
-                        "周期切换: 发波段（CH2 已触发）。"
-                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s, TRIG=SHARED"
+                        "周期切换: 发波段（CH2 外部触发联动）。"
+                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s, TRIG=CH1->CH2"
                     ),
                 )
         except Exception as exc:
@@ -254,8 +263,8 @@ class VisaWorker(QObject):
                     output_load="INF",
                 )
                 self._arm_ch2_single_pulse(dev, default_cfg)
-            dev.write(":SOUR2:BURS:TRIG")
-            self._log_ch2_state(dev, "CH2 单脉冲测试已触发")
+            self._trigger_cycle_start(dev)
+            self._log_ch2_state(dev, "CH2 外触发链路测试已触发(CH1->CH2)")
         except Exception as exc:
             self.dialog_critical.emit("测试失败", str(exc))
             self.log_line.emit(f"CH2 单脉冲测试失败: {exc}")
@@ -270,7 +279,7 @@ class VisaWorker(QObject):
         try:
             self._clear_error_queue(dev)
             dev.write(":OUTP2 OFF")
-            dev.write(":SOUR2:BURS:STAT OFF")
+            dev.write(":SOUR2:BURS OFF")
             dev.write(":SOUR2:FUNC SQU")
             dev.write(":SOUR2:FREQ 2")
             dev.write(":SOUR2:VOLT:LOW 0")

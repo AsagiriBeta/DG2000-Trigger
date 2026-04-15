@@ -55,17 +55,22 @@ def configure_outputs(dev: ScpiWriter, cfg: OutputConfig) -> None:
     dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
     dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
 
-    dev.write(":SOUR1:BURS:STAT OFF")
-    dev.write(":SOUR2:BURS:STAT ON")
+    dev.write(":SOUR1:BURS OFF")
+    dev.write(":SOUR2:BURS ON")
     dev.write(":SOUR2:BURS:MODE TRIG")
     dev.write(":SOUR2:BURS:NCYC 1")
-    # DG2000 手册定义触发源为 INT/EXT/MAN，不支持 BUS。
-    for cmd in (":SOUR2:BURS:TRIG:SOUR MAN",):
+    # CH2 走外部触发：由 CH1 后面板触发输出通过同轴线驱动。
+    for cmd in (":SOUR2:BURS:TRIG:SOUR EXT",):
         try:
             dev.write(cmd)
             break
         except Exception:
             continue
+    # 外部触发边沿默认用上升沿，便于与 CH1 触发输出对齐。
+    try:
+        dev.write(":SOUR2:BURS:TRIG:SLOP POS")
+    except Exception:
+        pass
     # 机型支持时，设置触发间隙空闲电平（BOTT/TOP），减少空闲态跳变。
     try:
         dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
@@ -85,9 +90,14 @@ def configure_ch1_burst_cycle(
 
     dev.write(":SOUR1:BURS:MODE TRIG")
     dev.write(":SOUR1:BURS:TRIG:SOUR MAN")
+    # 通过后面板输出 CH1 Burst 触发边沿，供 CH2 外部触发输入锁定。
+    try:
+        dev.write(":SOUR1:BURS:TRIG:TRIGO POS")
+    except Exception:
+        pass
     dev.write(f":SOUR1:BURS:NCYC {ncyc}")
     dev.write(":SOUR1:BURS:TDEL 0")
-    dev.write(":SOUR1:BURS:STAT ON")
+    dev.write(":SOUR1:BURS ON")
     return ncyc, burst_on_s, req_period_s
 
 

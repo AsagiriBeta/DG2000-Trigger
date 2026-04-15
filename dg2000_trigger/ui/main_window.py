@@ -147,26 +147,29 @@ class MainWindow(QMainWindow):
 
         ch1_group = QGroupBox("CH1 正弦")
         ch1_form = QFormLayout(ch1_group)
-        self.ch1_freq = self._double(1000.0, 0.001, 1e9, 3)
+        self.ch1_freq = self._double(0.001, 0.000001, 1000.0, 3)
+        self.ch1_freq.setSuffix(" MHz")
         self.ch1_vpp = self._double(2.0, 0.001, 20.0, 3)
         self.ch1_offset = self._double(0.0, -10.0, 10.0, 3)
         self.ch1_phase = self._double(0.0, -360.0, 360.0, 3)
-        ch1_form.addRow("频率 Hz", self.ch1_freq)
+        ch1_form.addRow("频率", self.ch1_freq)
         ch1_form.addRow("幅值 Vpp", self.ch1_vpp)
         ch1_form.addRow("偏置 V", self.ch1_offset)
         ch1_form.addRow("相位 deg", self.ch1_phase)
 
         ch2_group = QGroupBox("CH2 脉冲")
         ch2_form = QFormLayout(ch2_group)
-        self.ch2_width = self._double(100e-6, 1e-9, 10.0, 9)
-        self.ch2_delay = self._double(0.0, 0.0, 10.0, 9)
+        self.ch2_width = self._double(0.1, 0.000001, 10000.0, 3)
+        self.ch2_width.setSuffix(" ms")
+        self.ch2_delay = self._double(0.0, 0.0, 10000.0, 3)
+        self.ch2_delay.setSuffix(" ms")
         self.ch2_low = self._double(0.0, -10.0, 10.0, 3)
         self.ch2_high = self._double(5.0, -10.0, 10.0, 3)
         self.ch2_idle_combo = QComboBox()
         self.ch2_idle_combo.addItems(["BOTT", "TOP"])
         self.ch2_idle_combo.setCurrentText("BOTT")
-        ch2_form.addRow("脉宽 s", self.ch2_width)
-        ch2_form.addRow("触发延时 s", self.ch2_delay)
+        ch2_form.addRow("脉宽", self.ch2_width)
+        ch2_form.addRow("触发延时", self.ch2_delay)
         ch2_form.addRow("低电平 V", self.ch2_low)
         ch2_form.addRow("高电平 V", self.ch2_high)
         ch2_form.addRow("空闲电平", self.ch2_idle_combo)
@@ -176,11 +179,12 @@ class MainWindow(QMainWindow):
         self.load_combo = QComboBox()
         self.load_combo.addItems(["INF", "50"])
         self.load_combo.setCurrentText("INF")
-        self.cycle_period_s = self._double(2.0, 0.001, 3600.0, 3)
+        self.cycle_period_s = self._double(2000.0, 1.0, 3600000.0, 3)
+        self.cycle_period_s.setSuffix(" ms")
         self.sine_ratio_pct = self._double(50.0, 0.0, 100.0, 1)
         self.sine_ratio_pct.setSuffix(" %")
         common_form.addRow("输出负载", self.load_combo)
-        common_form.addRow("周期时长 s", self.cycle_period_s)
+        common_form.addRow("周期时长", self.cycle_period_s)
         common_form.addRow("正弦段占比", self.sine_ratio_pct)
 
         layout.addWidget(ch1_group)
@@ -281,54 +285,76 @@ class MainWindow(QMainWindow):
 
     def _read_config(self) -> OutputConfig:
         return OutputConfig(
-            ch1_freq_hz=self.ch1_freq.value(),
+            ch1_freq_hz=self.ch1_freq.value() * 1_000_000.0,
             ch1_vpp=self.ch1_vpp.value(),
             ch1_offset_v=self.ch1_offset.value(),
             ch1_phase_deg=self.ch1_phase.value(),
-            ch2_pulse_width_s=self.ch2_width.value(),
+            ch2_pulse_width_s=self.ch2_width.value() / 1000.0,
             ch2_low_v=self.ch2_low.value(),
             ch2_high_v=self.ch2_high.value(),
-            ch2_delay_s=self.ch2_delay.value(),
+            ch2_delay_s=self.ch2_delay.value() / 1000.0,
             ch2_idle_level=self.ch2_idle_combo.currentText(),
             output_load=self.load_combo.currentText(),
         )
 
     def _save_settings(self) -> None:
         self._settings.setValue("resource", self.resource_combo.currentText().strip())
-        self._settings.setValue("ch1/freq_hz", self.ch1_freq.value())
+        self._settings.setValue("ch1/freq_mhz", self.ch1_freq.value())
         self._settings.setValue("ch1/vpp", self.ch1_vpp.value())
         self._settings.setValue("ch1/offset_v", self.ch1_offset.value())
         self._settings.setValue("ch1/phase_deg", self.ch1_phase.value())
-        self._settings.setValue("ch2/width_s", self.ch2_width.value())
-        self._settings.setValue("ch2/delay_s", self.ch2_delay.value())
+        self._settings.setValue("ch2/width_ms", self.ch2_width.value())
+        self._settings.setValue("ch2/delay_ms", self.ch2_delay.value())
         self._settings.setValue("ch2/low_v", self.ch2_low.value())
         self._settings.setValue("ch2/high_v", self.ch2_high.value())
         self._settings.setValue("ch2/idle_level", self.ch2_idle_combo.currentText())
         self._settings.setValue("common/load", self.load_combo.currentText())
-        self._settings.setValue("common/cycle_period_s", self.cycle_period_s.value())
+        self._settings.setValue("common/cycle_period_ms", self.cycle_period_s.value())
         self._settings.setValue("common/sine_ratio_pct", self.sine_ratio_pct.value())
+
+    def _setting_float(self, key: str, default: float) -> float:
+        value = self._settings.value(key, default)
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
 
     def _load_settings(self) -> None:
         self.resource_combo.setEditText(str(self._settings.value("resource", "")))
-        self.ch1_freq.setValue(float(self._settings.value("ch1/freq_hz", self.ch1_freq.value())))
-        self.ch1_vpp.setValue(float(self._settings.value("ch1/vpp", self.ch1_vpp.value())))
-        self.ch1_offset.setValue(
-            float(self._settings.value("ch1/offset_v", self.ch1_offset.value()))
-        )
-        self.ch1_phase.setValue(
-            float(self._settings.value("ch1/phase_deg", self.ch1_phase.value()))
-        )
-        self.ch2_width.setValue(float(self._settings.value("ch2/width_s", self.ch2_width.value())))
-        self.ch2_delay.setValue(float(self._settings.value("ch2/delay_s", self.ch2_delay.value())))
-        self.ch2_low.setValue(float(self._settings.value("ch2/low_v", self.ch2_low.value())))
-        self.ch2_high.setValue(float(self._settings.value("ch2/high_v", self.ch2_high.value())))
+        freq_mhz = self._setting_float("ch1/freq_mhz", -1.0)
+        if freq_mhz <= 0:
+            freq_hz = self._setting_float("ch1/freq_hz", self.ch1_freq.value() * 1_000_000.0)
+            freq_mhz = freq_hz / 1_000_000.0
+        self.ch1_freq.setValue(freq_mhz)
+        self.ch1_vpp.setValue(self._setting_float("ch1/vpp", self.ch1_vpp.value()))
+        self.ch1_offset.setValue(self._setting_float("ch1/offset_v", self.ch1_offset.value()))
+        self.ch1_phase.setValue(self._setting_float("ch1/phase_deg", self.ch1_phase.value()))
+
+        width_ms = self._setting_float("ch2/width_ms", -1.0)
+        if width_ms < 0:
+            width_s = self._setting_float("ch2/width_s", self.ch2_width.value() / 1000.0)
+            width_ms = width_s * 1000.0
+        self.ch2_width.setValue(width_ms)
+
+        delay_ms = self._setting_float("ch2/delay_ms", -1.0)
+        if delay_ms < 0:
+            delay_s = self._setting_float("ch2/delay_s", self.ch2_delay.value() / 1000.0)
+            delay_ms = delay_s * 1000.0
+        self.ch2_delay.setValue(delay_ms)
+
+        self.ch2_low.setValue(self._setting_float("ch2/low_v", self.ch2_low.value()))
+        self.ch2_high.setValue(self._setting_float("ch2/high_v", self.ch2_high.value()))
         self.ch2_idle_combo.setCurrentText(str(self._settings.value("ch2/idle_level", "BOTT")))
         self.load_combo.setCurrentText(str(self._settings.value("common/load", "INF")))
-        self.cycle_period_s.setValue(
-            float(self._settings.value("common/cycle_period_s", self.cycle_period_s.value()))
-        )
+        cycle_period_ms = self._setting_float("common/cycle_period_ms", -1.0)
+        if cycle_period_ms < 0:
+            cycle_period_s = self._setting_float(
+                "common/cycle_period_s", self.cycle_period_s.value() / 1000.0
+            )
+            cycle_period_ms = cycle_period_s * 1000.0
+        self.cycle_period_s.setValue(cycle_period_ms)
         self.sine_ratio_pct.setValue(
-            float(self._settings.value("common/sine_ratio_pct", self.sine_ratio_pct.value()))
+            self._setting_float("common/sine_ratio_pct", self.sine_ratio_pct.value())
         )
 
     @Slot()
@@ -340,7 +366,7 @@ class MainWindow(QMainWindow):
         self.cycle_prepare_requested.emit(cfg, on_ms, off_ms)
 
     def _calc_cycle_ms(self) -> tuple[int, int]:
-        period_ms = max(1, int(self.cycle_period_s.value() * 1000))
+        period_ms = max(1, int(self.cycle_period_s.value()))
         ratio = self.sine_ratio_pct.value() / 100.0
         on_ms = int(period_ms * ratio)
         off_ms = period_ms - on_ms

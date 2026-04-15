@@ -62,3 +62,7 @@ Desktop.ini
 *.log
 *.tmp
 *.temp
+
+# --- 本地手册文件 ---
+DG2000_ProgrammingGuide_CN.md
+DG2000_UserGuide_CN.md
