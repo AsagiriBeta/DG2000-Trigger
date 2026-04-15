@@ -2,7 +2,16 @@ from __future__ import annotations
 
 import logging
 
-from PySide6.QtCore import QEventLoop, QMetaObject, QThread, QTimer, Qt, Signal, Slot
+from PySide6.QtCore import (
+    QEventLoop,
+    QMetaObject,
+    QSettings,
+    QThread,
+    QTimer,
+    Qt,
+    Signal,
+    Slot,
+)
 from PySide6.QtWidgets import (
     QComboBox,
     QDoubleSpinBox,
@@ -36,6 +45,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self) -> None:
         super().__init__()
+        self._settings = QSettings("dg2000-trigger", "dg2000-trigger")
         self.setWindowTitle("DG2000 控制台")
         self.resize(980, 680)
 
@@ -85,6 +95,7 @@ class MainWindow(QMainWindow):
         self.local_btn.clicked.connect(self._worker.return_to_local)
 
         self.apply_btn.clicked.connect(self.start_cycle)
+        self._load_settings()
 
         QTimer.singleShot(0, self.request_scan.emit)
 
@@ -282,6 +293,44 @@ class MainWindow(QMainWindow):
             output_load=self.load_combo.currentText(),
         )
 
+    def _save_settings(self) -> None:
+        self._settings.setValue("resource", self.resource_combo.currentText().strip())
+        self._settings.setValue("ch1/freq_hz", self.ch1_freq.value())
+        self._settings.setValue("ch1/vpp", self.ch1_vpp.value())
+        self._settings.setValue("ch1/offset_v", self.ch1_offset.value())
+        self._settings.setValue("ch1/phase_deg", self.ch1_phase.value())
+        self._settings.setValue("ch2/width_s", self.ch2_width.value())
+        self._settings.setValue("ch2/delay_s", self.ch2_delay.value())
+        self._settings.setValue("ch2/low_v", self.ch2_low.value())
+        self._settings.setValue("ch2/high_v", self.ch2_high.value())
+        self._settings.setValue("ch2/idle_level", self.ch2_idle_combo.currentText())
+        self._settings.setValue("common/load", self.load_combo.currentText())
+        self._settings.setValue("common/cycle_period_s", self.cycle_period_s.value())
+        self._settings.setValue("common/sine_ratio_pct", self.sine_ratio_pct.value())
+
+    def _load_settings(self) -> None:
+        self.resource_combo.setEditText(str(self._settings.value("resource", "")))
+        self.ch1_freq.setValue(float(self._settings.value("ch1/freq_hz", self.ch1_freq.value())))
+        self.ch1_vpp.setValue(float(self._settings.value("ch1/vpp", self.ch1_vpp.value())))
+        self.ch1_offset.setValue(
+            float(self._settings.value("ch1/offset_v", self.ch1_offset.value()))
+        )
+        self.ch1_phase.setValue(
+            float(self._settings.value("ch1/phase_deg", self.ch1_phase.value()))
+        )
+        self.ch2_width.setValue(float(self._settings.value("ch2/width_s", self.ch2_width.value())))
+        self.ch2_delay.setValue(float(self._settings.value("ch2/delay_s", self.ch2_delay.value())))
+        self.ch2_low.setValue(float(self._settings.value("ch2/low_v", self.ch2_low.value())))
+        self.ch2_high.setValue(float(self._settings.value("ch2/high_v", self.ch2_high.value())))
+        self.ch2_idle_combo.setCurrentText(str(self._settings.value("ch2/idle_level", "BOTT")))
+        self.load_combo.setCurrentText(str(self._settings.value("common/load", "INF")))
+        self.cycle_period_s.setValue(
+            float(self._settings.value("common/cycle_period_s", self.cycle_period_s.value()))
+        )
+        self.sine_ratio_pct.setValue(
+            float(self._settings.value("common/sine_ratio_pct", self.sine_ratio_pct.value()))
+        )
+
     @Slot()
     def start_cycle(self) -> None:
         if not self._require_connected():
@@ -379,6 +428,7 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        self._save_settings()
         self._cycle_running = False
         self._cycle_timer.stop()
 
