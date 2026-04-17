@@ -46,36 +46,40 @@ class VisaWorker(QObject):
         self._cycle_active = False
         self._cycle_cfg: Optional[OutputConfig] = None
 
-    def _arm_ch2_single_pulse(self, dev: MessageBasedResource, cfg: OutputConfig) -> None:
-        """重申 CH2 burst 配置，等待外部触发。"""
+    def _arm_ch2_pulse_train(
+        self, dev: MessageBasedResource, cfg: OutputConfig, trigger_delay_s: float
+    ) -> None:
+        """重申 CH2 burst 配置，等待 CH1 后面板触发并输出脉冲串。"""
         dev.write(":OUTP2 ON")
         dev.write(":SOUR2:FUNC PULS")
-        dev.write(":SOUR2:FREQ 1000")
+        if cfg.ch2_pulses_per_cycle <= 1:
+            dev.write(":SOUR2:FREQ 1000")
+        else:
+            freq = 1.0 / max(1e-6, cfg.ch2_pulse_interval_s)
+            dev.write(f":SOUR2:FREQ {freq:.12g}")
         dev.write(f":SOUR2:PULS:WIDT {cfg.ch2_pulse_width_s:.12g}")
-        dev.write(f":SOUR2:PULS:DEL {cfg.ch2_delay_s:.12g}")
+        dev.write(f":SOUR2:BURS:TDEL {max(0.0, trigger_delay_s):.12g}")
         dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
         dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
         dev.write(":SOUR2:BURS ON")
         dev.write(":SOUR2:BURS:MODE TRIG")
-        dev.write(":SOUR2:BURS:NCYC 1")
+        dev.write(f":SOUR2:BURS:NCYC {max(1, int(cfg.ch2_pulses_per_cycle))}")
         try:
             dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
         except Exception:
             pass
-        for cmd in (":SOUR2:BURS:TRIG:SOUR EXT",):
-            try:
-                dev.write(cmd)
-                break
-            except Exception:
-                continue
-        try:
-            dev.write(":SOUR2:BURS:TRIG:SLOP POS")
-        except Exception:
-            pass
+        dev.write(":SOUR2:BURS:TRIG:SOUR EXT")
 
     def _trigger_cycle_start(self, dev: MessageBasedResource) -> None:
-        """显式触发 CH1 burst；CH2 由后面板外部触发输入联动。"""
+        """显式触发 CH1 burst。"""
         dev.write(":SOUR1:BURS:TRIG")
+
+    @staticmethod
+    def _ch2_pulse_train_span_s(cfg: OutputConfig) -> float:
+        count = max(1, int(cfg.ch2_pulses_per_cycle))
+        interval_s = max(0.0, cfg.ch2_pulse_interval_s)
+        # 最后一发脉冲的结束时刻（相对 CH2 脉冲串开始）：
+        return max(0.0, (count - 1) * interval_s + max(0.0, cfg.ch2_pulse_width_s))
 
     def _clear_error_queue(self, dev: MessageBasedResource) -> None:
         for _ in range(6):
@@ -186,19 +190,31 @@ class VisaWorker(QObject):
             ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
                 self._dev, cfg, on_s, off_s
             )
+            actual_off_s = max(0.0, actual_period_s - actual_on_s)
+            ch2_train_end_in_off_s = max(0.0, cfg.ch2_after_sine_delay_s) + self._ch2_pulse_train_span_s(cfg)
+            if ch2_train_end_in_off_s > actual_off_s:
+                self._cycle_active = False
+                self._cycle_cfg = None
+                self.cycle_prepare_failed.emit(
+                    "CH2 脉冲串超出停波窗口：请减小方波个数/方波间隔/脉宽/结束后延时，"
+                    "或增大周期时长（或减小正弦段占比）。"
+                )
+                return
+            ch2_trigger_delay_s = actual_on_s + max(0.0, cfg.ch2_after_sine_delay_s)
             self._dev.write(":OUTP1 ON")
-            self._arm_ch2_single_pulse(self._dev, cfg)
+            self._arm_ch2_pulse_train(self._dev, cfg, ch2_trigger_delay_s)
             self._trigger_cycle_start(self._dev)
+            ch2_after_ms = int(round(ch2_trigger_delay_s * 1000.0))
             self.log_line.emit(
                 "触发链路配置: "
-                f"CH1_TRIGO={self._query_safe(self._dev, ':SOUR1:BURS:TRIG:TRIGO?')}, "
                 f"CH2_TRIG_SOUR={self._query_safe(self._dev, ':SOUR2:BURS:TRIG:SOUR?')}, "
-                f"CH2_TRIG_SLOP={self._query_safe(self._dev, ':SOUR2:BURS:TRIG:SLOP?')}"
+                f"CH2 总延时={ch2_after_ms}ms（CH1实际发波+结束后延时）, "
+                f"每周期方波={cfg.ch2_pulses_per_cycle}, 间隔={cfg.ch2_pulse_interval_s*1000.0:.3f}ms"
             )
             err = self._dev.query(":SYST:ERR?").strip()
             self.cycle_started.emit(
                 format_cycle_start_log(cfg, actual_on_s, max(0.0, actual_period_s - actual_on_s), err)
-                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s, TRIG=CH1->CH2(EXT)"
+                + f", CH1 Burst NCYC={ncyc}, PER={actual_period_s:.6g}s, TRIG=CH1->CH2(EXT, delayed)"
             )
         except Exception as exc:
             self._cycle_active = False
@@ -221,14 +237,29 @@ class VisaWorker(QObject):
                 ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
                     dev, cfg, on_s, off_s
                 )
-                self._arm_ch2_single_pulse(dev, cfg)
+                actual_off_s = max(0.0, actual_period_s - actual_on_s)
+                ch2_train_end_in_off_s = (
+                    max(0.0, cfg.ch2_after_sine_delay_s) + self._ch2_pulse_train_span_s(cfg)
+                )
+                if ch2_train_end_in_off_s > actual_off_s:
+                    self._cycle_active = False
+                    self._cycle_cfg = None
+                    self.cycle_edge_failed.emit(
+                        "CH2 脉冲串超出停波窗口：请调整方波个数/间隔/脉宽或周期参数。"
+                    )
+                    return
+                ch2_trigger_delay_s = actual_on_s + max(0.0, cfg.ch2_after_sine_delay_s)
+                self._arm_ch2_pulse_train(dev, cfg, ch2_trigger_delay_s)
                 self._trigger_cycle_start(dev)
+                ch2_after_ms = int(round(ch2_trigger_delay_s * 1000.0))
                 self.cycle_edge_done.emit(
                     True,
                     on_ms,
                     (
-                        "周期切换: 发波段（CH2 外部触发联动）。"
-                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s, TRIG=CH1->CH2"
+                        "周期切换: 发波段（CH2 由 CH1 外触发，延时后输出脉冲串）。"
+                        f"CH1 Burst NCYC={ncyc}, ON={actual_on_s:.6g}s, PER={actual_period_s:.6g}s, "
+                        f"CH2_DELAY_TOTAL={ch2_after_ms}ms, "
+                        f"CH2_COUNT={cfg.ch2_pulses_per_cycle}, CH2_GAP={cfg.ch2_pulse_interval_s*1000.0:.3f}ms"
                     ),
                 )
         except Exception as exc:
@@ -247,7 +278,25 @@ class VisaWorker(QObject):
         try:
             self._clear_error_queue(dev)
             if self._cycle_cfg is not None:
-                self._arm_ch2_single_pulse(dev, self._cycle_cfg)
+                pulse_cfg = OutputConfig(
+                    ch1_freq_hz=self._cycle_cfg.ch1_freq_hz,
+                    ch1_vpp=self._cycle_cfg.ch1_vpp,
+                    ch1_offset_v=self._cycle_cfg.ch1_offset_v,
+                    ch1_phase_deg=self._cycle_cfg.ch1_phase_deg,
+                    ch2_pulse_width_s=self._cycle_cfg.ch2_pulse_width_s,
+                    ch2_after_sine_delay_s=self._cycle_cfg.ch2_after_sine_delay_s,
+                    ch2_pulses_per_cycle=1,
+                    ch2_pulse_interval_s=0.001,
+                    ch2_low_v=self._cycle_cfg.ch2_low_v,
+                    ch2_high_v=self._cycle_cfg.ch2_high_v,
+                    ch2_idle_level=self._cycle_cfg.ch2_idle_level,
+                    output_load=self._cycle_cfg.output_load,
+                )
+                self._arm_ch2_pulse_train(
+                    dev,
+                    pulse_cfg,
+                    max(0.0, pulse_cfg.ch2_after_sine_delay_s),
+                )
             else:
                 # 测试按钮在未启动循环时仍使用安全默认值。
                 default_cfg = OutputConfig(
@@ -256,15 +305,17 @@ class VisaWorker(QObject):
                     ch1_offset_v=0.0,
                     ch1_phase_deg=0.0,
                     ch2_pulse_width_s=0.001,
+                    ch2_after_sine_delay_s=0.0,
+                    ch2_pulses_per_cycle=1,
+                    ch2_pulse_interval_s=0.001,
                     ch2_low_v=0.0,
                     ch2_high_v=5.0,
-                    ch2_delay_s=0.0,
                     ch2_idle_level="BOTT",
                     output_load="INF",
                 )
-                self._arm_ch2_single_pulse(dev, default_cfg)
+                self._arm_ch2_pulse_train(dev, default_cfg, default_cfg.ch2_after_sine_delay_s)
             self._trigger_cycle_start(dev)
-            self._log_ch2_state(dev, "CH2 外触发链路测试已触发(CH1->CH2)")
+            self._log_ch2_state(dev, "CH2 外触发链路测试已触发(CH1->CH2 EXT)")
         except Exception as exc:
             self.dialog_critical.emit("测试失败", str(exc))
             self.log_line.emit(f"CH2 单脉冲测试失败: {exc}")

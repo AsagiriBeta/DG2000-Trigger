@@ -48,29 +48,23 @@ def configure_outputs(dev: ScpiWriter, cfg: OutputConfig) -> None:
     dev.write(f":SOUR1:PHAS {cfg.ch1_phase_deg:.12g}")
 
     dev.write(":SOUR2:FUNC PULS")
-    # 单次触发 N=1 时频率不决定触发次数，这里固定为安全值，避免界面暴露误导参数。
-    dev.write(":SOUR2:FREQ 1000")
+    if cfg.ch2_pulses_per_cycle <= 1:
+        # 单次触发 N=1 时频率不决定触发次数，这里固定为安全值。
+        dev.write(":SOUR2:FREQ 1000")
+    else:
+        freq = 1.0 / max(1e-6, cfg.ch2_pulse_interval_s)
+        dev.write(f":SOUR2:FREQ {freq:.12g}")
     dev.write(f":SOUR2:PULS:WIDT {cfg.ch2_pulse_width_s:.12g}")
-    dev.write(f":SOUR2:PULS:DEL {cfg.ch2_delay_s:.12g}")
+    dev.write(":SOUR2:BURS:TDEL 0")
     dev.write(f":SOUR2:VOLT:LOW {cfg.ch2_low_v:.12g}")
     dev.write(f":SOUR2:VOLT:HIGH {cfg.ch2_high_v:.12g}")
 
     dev.write(":SOUR1:BURS OFF")
     dev.write(":SOUR2:BURS ON")
     dev.write(":SOUR2:BURS:MODE TRIG")
-    dev.write(":SOUR2:BURS:NCYC 1")
-    # CH2 走外部触发：由 CH1 后面板触发输出通过同轴线驱动。
-    for cmd in (":SOUR2:BURS:TRIG:SOUR EXT",):
-        try:
-            dev.write(cmd)
-            break
-        except Exception:
-            continue
-    # 外部触发边沿默认用上升沿，便于与 CH1 触发输出对齐。
-    try:
-        dev.write(":SOUR2:BURS:TRIG:SLOP POS")
-    except Exception:
-        pass
+    dev.write(f":SOUR2:BURS:NCYC {max(1, int(cfg.ch2_pulses_per_cycle))}")
+    # CH2 走外部触发：由 CH1 后面板触发输出通过同轴线驱动，获得硬件级时序稳定性。
+    dev.write(":SOUR2:BURS:TRIG:SOUR EXT")
     # 机型支持时，设置触发间隙空闲电平（BOTT/TOP），减少空闲态跳变。
     try:
         dev.write(f":SOUR2:BURS:IDLE {cfg.ch2_idle_level}")
@@ -106,7 +100,8 @@ def format_cycle_start_log(cfg: OutputConfig, on_s: float, off_s: float, syst_er
         "循环已开始: "
         f"CH1 {cfg.ch1_freq_hz:.3f}Hz/{cfg.ch1_vpp:.3f}Vpp, "
         f"CH2 脉宽 {cfg.ch2_pulse_width_s:.6g}s,"
-        f"延时 {cfg.ch2_delay_s:.6g}s,空闲 {cfg.ch2_idle_level}, "
+        f"正弦结束后延时 {cfg.ch2_after_sine_delay_s:.6g}s, "
+        f"每周期 {cfg.ch2_pulses_per_cycle} 个, 间隔 {cfg.ch2_pulse_interval_s:.6g}s, 空闲 {cfg.ch2_idle_level}, "
         f"发波 {on_s:.3f}s / 停波 {off_s:.3f}s, "
         f"设备状态 {syst_err}"
     )

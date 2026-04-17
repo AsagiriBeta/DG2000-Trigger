@@ -25,10 +25,12 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QPlainTextEdit,
+    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
+from dg2000_trigger import __version__
 from dg2000_trigger.models import OutputConfig
 from dg2000_trigger.worker import VisaWorker
 
@@ -46,7 +48,7 @@ class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
         self._settings = QSettings("dg2000-trigger", "dg2000-trigger")
-        self.setWindowTitle("DG2000 控制台")
+        self.setWindowTitle(f"DG2000 控制台 v{__version__}")
         self.resize(980, 680)
 
         self._instrument_connected = False
@@ -71,6 +73,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(root)
         outer = QVBoxLayout(root)
 
+        outer.addLayout(self._build_header_layout())
         outer.addWidget(self._build_connection_box())
         outer.addWidget(self._build_params_box())
         outer.addWidget(self._build_actions_box())
@@ -141,6 +144,14 @@ class MainWindow(QMainWindow):
 
         return box
 
+    def _build_header_layout(self) -> QHBoxLayout:
+        layout = QHBoxLayout()
+        layout.addStretch(1)
+        version_label = QLabel(f"版本: v{__version__}")
+        version_label.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        layout.addWidget(version_label)
+        return layout
+
     def _build_params_box(self) -> QGroupBox:
         box = QGroupBox("参数")
         layout = QHBoxLayout(box)
@@ -161,15 +172,22 @@ class MainWindow(QMainWindow):
         ch2_form = QFormLayout(ch2_group)
         self.ch2_width = self._double(0.1, 0.000001, 10000.0, 3)
         self.ch2_width.setSuffix(" ms")
-        self.ch2_delay = self._double(0.0, 0.0, 10000.0, 3)
-        self.ch2_delay.setSuffix(" ms")
+        self.ch2_after_sine_delay = self._double(0.0, 0.0, 10000.0, 3)
+        self.ch2_after_sine_delay.setSuffix(" ms")
+        self.ch2_pulses_per_cycle = QSpinBox()
+        self.ch2_pulses_per_cycle.setRange(1, 1000000)
+        self.ch2_pulses_per_cycle.setValue(1)
+        self.ch2_pulse_interval = self._double(1.0, 0.001, 10000.0, 3)
+        self.ch2_pulse_interval.setSuffix(" ms")
         self.ch2_low = self._double(0.0, -10.0, 10.0, 3)
         self.ch2_high = self._double(5.0, -10.0, 10.0, 3)
         self.ch2_idle_combo = QComboBox()
         self.ch2_idle_combo.addItems(["BOTT", "TOP"])
         self.ch2_idle_combo.setCurrentText("BOTT")
         ch2_form.addRow("脉宽", self.ch2_width)
-        ch2_form.addRow("触发延时", self.ch2_delay)
+        ch2_form.addRow("正弦结束后延时", self.ch2_after_sine_delay)
+        ch2_form.addRow("每周期方波个数", self.ch2_pulses_per_cycle)
+        ch2_form.addRow("方波间隔", self.ch2_pulse_interval)
         ch2_form.addRow("低电平 V", self.ch2_low)
         ch2_form.addRow("高电平 V", self.ch2_high)
         ch2_form.addRow("空闲电平", self.ch2_idle_combo)
@@ -290,9 +308,11 @@ class MainWindow(QMainWindow):
             ch1_offset_v=self.ch1_offset.value(),
             ch1_phase_deg=self.ch1_phase.value(),
             ch2_pulse_width_s=self.ch2_width.value() / 1000.0,
+            ch2_after_sine_delay_s=self.ch2_after_sine_delay.value() / 1000.0,
+            ch2_pulses_per_cycle=self.ch2_pulses_per_cycle.value(),
+            ch2_pulse_interval_s=self.ch2_pulse_interval.value() / 1000.0,
             ch2_low_v=self.ch2_low.value(),
             ch2_high_v=self.ch2_high.value(),
-            ch2_delay_s=self.ch2_delay.value() / 1000.0,
             ch2_idle_level=self.ch2_idle_combo.currentText(),
             output_load=self.load_combo.currentText(),
         )
@@ -304,7 +324,11 @@ class MainWindow(QMainWindow):
         self._settings.setValue("ch1/offset_v", self.ch1_offset.value())
         self._settings.setValue("ch1/phase_deg", self.ch1_phase.value())
         self._settings.setValue("ch2/width_ms", self.ch2_width.value())
-        self._settings.setValue("ch2/delay_ms", self.ch2_delay.value())
+        self._settings.setValue(
+            "ch2/after_sine_delay_ms", self.ch2_after_sine_delay.value()
+        )
+        self._settings.setValue("ch2/pulses_per_cycle", self.ch2_pulses_per_cycle.value())
+        self._settings.setValue("ch2/pulse_interval_ms", self.ch2_pulse_interval.value())
         self._settings.setValue("ch2/low_v", self.ch2_low.value())
         self._settings.setValue("ch2/high_v", self.ch2_high.value())
         self._settings.setValue("ch2/idle_level", self.ch2_idle_combo.currentText())
@@ -316,6 +340,13 @@ class MainWindow(QMainWindow):
         value = self._settings.value(key, default)
         try:
             return float(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _setting_int(self, key: str, default: int) -> int:
+        value = self._settings.value(key, default)
+        try:
+            return int(value)
         except (TypeError, ValueError):
             return default
 
@@ -336,11 +367,14 @@ class MainWindow(QMainWindow):
             width_ms = width_s * 1000.0
         self.ch2_width.setValue(width_ms)
 
-        delay_ms = self._setting_float("ch2/delay_ms", -1.0)
-        if delay_ms < 0:
-            delay_s = self._setting_float("ch2/delay_s", self.ch2_delay.value() / 1000.0)
-            delay_ms = delay_s * 1000.0
-        self.ch2_delay.setValue(delay_ms)
+        self.ch2_after_sine_delay.setValue(
+            self._setting_float("ch2/after_sine_delay_ms", self.ch2_after_sine_delay.value())
+        )
+        pulses_per_cycle = self._setting_int("ch2/pulses_per_cycle", 1)
+        self.ch2_pulses_per_cycle.setValue(max(1, min(1_000_000, pulses_per_cycle)))
+        self.ch2_pulse_interval.setValue(
+            self._setting_float("ch2/pulse_interval_ms", self.ch2_pulse_interval.value())
+        )
 
         self.ch2_low.setValue(self._setting_float("ch2/low_v", self.ch2_low.value()))
         self.ch2_high.setValue(self._setting_float("ch2/high_v", self.ch2_high.value()))
