@@ -4,4 +4,4 @@ from dg2000_trigger.models import OutputConfig
 
 __all__ = ["OutputConfig", "__version__"]
 
-__version__ = "0.2.5"
+__version__ = "0.2.6"
