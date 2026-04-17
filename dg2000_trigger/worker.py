@@ -81,6 +81,28 @@ class VisaWorker(QObject):
         # 最后一发脉冲的结束时刻（相对 CH2 脉冲串开始）：
         return max(0.0, (count - 1) * interval_s + max(0.0, cfg.ch2_pulse_width_s))
 
+    @staticmethod
+    def _validate_ch2_train(cfg: OutputConfig) -> Optional[str]:
+        if cfg.ch2_pulses_per_cycle > 1 and cfg.ch2_pulse_interval_s < cfg.ch2_pulse_width_s:
+            return "CH2 方波间隔必须大于等于脉宽（当每周期方波个数 > 1 时）。"
+        return None
+
+    def _calc_ch2_trigger_delay_s(
+        self, cfg: OutputConfig, actual_on_s: float, actual_period_s: float
+    ) -> tuple[Optional[float], Optional[str]]:
+        validate_err = self._validate_ch2_train(cfg)
+        if validate_err:
+            return None, validate_err
+        actual_off_s = max(0.0, actual_period_s - actual_on_s)
+        ch2_train_end_in_off_s = max(0.0, cfg.ch2_after_sine_delay_s) + self._ch2_pulse_train_span_s(cfg)
+        if ch2_train_end_in_off_s > actual_off_s:
+            return (
+                None,
+                "CH2 脉冲串超出停波窗口：请减小方波个数/方波间隔/脉宽/结束后延时，"
+                "或增大周期时长（或减小正弦段占比）。",
+            )
+        return actual_on_s + max(0.0, cfg.ch2_after_sine_delay_s), None
+
     def _clear_error_queue(self, dev: MessageBasedResource) -> None:
         for _ in range(6):
             err = self._query_safe(dev, ":SYST:ERR?")
@@ -190,17 +212,14 @@ class VisaWorker(QObject):
             ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
                 self._dev, cfg, on_s, off_s
             )
-            actual_off_s = max(0.0, actual_period_s - actual_on_s)
-            ch2_train_end_in_off_s = max(0.0, cfg.ch2_after_sine_delay_s) + self._ch2_pulse_train_span_s(cfg)
-            if ch2_train_end_in_off_s > actual_off_s:
+            ch2_trigger_delay_s, ch2_delay_err = self._calc_ch2_trigger_delay_s(
+                cfg, actual_on_s, actual_period_s
+            )
+            if ch2_delay_err is not None or ch2_trigger_delay_s is None:
                 self._cycle_active = False
                 self._cycle_cfg = None
-                self.cycle_prepare_failed.emit(
-                    "CH2 脉冲串超出停波窗口：请减小方波个数/方波间隔/脉宽/结束后延时，"
-                    "或增大周期时长（或减小正弦段占比）。"
-                )
+                self.cycle_prepare_failed.emit(ch2_delay_err or "CH2 参数无效。")
                 return
-            ch2_trigger_delay_s = actual_on_s + max(0.0, cfg.ch2_after_sine_delay_s)
             self._dev.write(":OUTP1 ON")
             self._arm_ch2_pulse_train(self._dev, cfg, ch2_trigger_delay_s)
             self._trigger_cycle_start(self._dev)
@@ -237,18 +256,14 @@ class VisaWorker(QObject):
                 ncyc, actual_on_s, actual_period_s = configure_ch1_burst_cycle(
                     dev, cfg, on_s, off_s
                 )
-                actual_off_s = max(0.0, actual_period_s - actual_on_s)
-                ch2_train_end_in_off_s = (
-                    max(0.0, cfg.ch2_after_sine_delay_s) + self._ch2_pulse_train_span_s(cfg)
+                ch2_trigger_delay_s, ch2_delay_err = self._calc_ch2_trigger_delay_s(
+                    cfg, actual_on_s, actual_period_s
                 )
-                if ch2_train_end_in_off_s > actual_off_s:
+                if ch2_delay_err is not None or ch2_trigger_delay_s is None:
                     self._cycle_active = False
                     self._cycle_cfg = None
-                    self.cycle_edge_failed.emit(
-                        "CH2 脉冲串超出停波窗口：请调整方波个数/间隔/脉宽或周期参数。"
-                    )
+                    self.cycle_edge_failed.emit(ch2_delay_err or "CH2 参数无效。")
                     return
-                ch2_trigger_delay_s = actual_on_s + max(0.0, cfg.ch2_after_sine_delay_s)
                 self._arm_ch2_pulse_train(dev, cfg, ch2_trigger_delay_s)
                 self._trigger_cycle_start(dev)
                 ch2_after_ms = int(round(ch2_trigger_delay_s * 1000.0))
@@ -290,7 +305,8 @@ class VisaWorker(QObject):
                     ch2_low_v=self._cycle_cfg.ch2_low_v,
                     ch2_high_v=self._cycle_cfg.ch2_high_v,
                     ch2_idle_level=self._cycle_cfg.ch2_idle_level,
-                    output_load=self._cycle_cfg.output_load,
+                    ch1_output_load=self._cycle_cfg.ch1_output_load,
+                    ch2_output_load=self._cycle_cfg.ch2_output_load,
                 )
                 self._arm_ch2_pulse_train(
                     dev,
@@ -311,7 +327,8 @@ class VisaWorker(QObject):
                     ch2_low_v=0.0,
                     ch2_high_v=5.0,
                     ch2_idle_level="BOTT",
-                    output_load="INF",
+                    ch1_output_load="50",
+                    ch2_output_load="INF",
                 )
                 self._arm_ch2_pulse_train(dev, default_cfg, default_cfg.ch2_after_sine_delay_s)
             self._trigger_cycle_start(dev)

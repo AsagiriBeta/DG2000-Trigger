@@ -39,8 +39,8 @@ def configure_outputs(dev: ScpiWriter, cfg: OutputConfig) -> None:
     dev.write(":OUTP1 OFF")
     dev.write(":OUTP2 OFF")
 
-    dev.write(f":OUTP1:LOAD {cfg.output_load}")
-    dev.write(f":OUTP2:LOAD {cfg.output_load}")
+    dev.write(f":OUTP1:LOAD {cfg.ch1_output_load}")
+    dev.write(f":OUTP2:LOAD {cfg.ch2_output_load}")
 
     dev.write(
         f":SOUR1:APPL:SIN {cfg.ch1_freq_hz:.12g},{cfg.ch1_vpp:.12g},{cfg.ch1_offset_v:.12g}"

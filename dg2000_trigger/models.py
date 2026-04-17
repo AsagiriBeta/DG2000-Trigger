@@ -18,4 +18,5 @@ class OutputConfig:
     ch2_low_v: float
     ch2_high_v: float
     ch2_idle_level: str
-    output_load: str
+    ch1_output_load: str
+    ch2_output_load: str

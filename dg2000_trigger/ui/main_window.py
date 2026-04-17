@@ -170,8 +170,6 @@ class MainWindow(QMainWindow):
 
         ch2_group = QGroupBox("CH2 脉冲")
         ch2_form = QFormLayout(ch2_group)
-        self.ch2_width = self._double(0.1, 0.000001, 10000.0, 3)
-        self.ch2_width.setSuffix(" ms")
         self.ch2_after_sine_delay = self._double(0.0, 0.0, 10000.0, 3)
         self.ch2_after_sine_delay.setSuffix(" ms")
         self.ch2_pulses_per_cycle = QSpinBox()
@@ -179,29 +177,21 @@ class MainWindow(QMainWindow):
         self.ch2_pulses_per_cycle.setValue(1)
         self.ch2_pulse_interval = self._double(1.0, 0.001, 10000.0, 3)
         self.ch2_pulse_interval.setSuffix(" ms")
-        self.ch2_low = self._double(0.0, -10.0, 10.0, 3)
-        self.ch2_high = self._double(5.0, -10.0, 10.0, 3)
-        self.ch2_idle_combo = QComboBox()
-        self.ch2_idle_combo.addItems(["BOTT", "TOP"])
-        self.ch2_idle_combo.setCurrentText("BOTT")
-        ch2_form.addRow("脉宽", self.ch2_width)
         ch2_form.addRow("正弦结束后延时", self.ch2_after_sine_delay)
         ch2_form.addRow("每周期方波个数", self.ch2_pulses_per_cycle)
         ch2_form.addRow("方波间隔", self.ch2_pulse_interval)
-        ch2_form.addRow("低电平 V", self.ch2_low)
-        ch2_form.addRow("高电平 V", self.ch2_high)
-        ch2_form.addRow("空闲电平", self.ch2_idle_combo)
+        ch2_form.addRow(QLabel("固定输出: TTL 5V，上升沿触发（自动配置）"))
 
         common_group = QGroupBox("公共")
         common_form = QFormLayout(common_group)
-        self.load_combo = QComboBox()
-        self.load_combo.addItems(["INF", "50"])
-        self.load_combo.setCurrentText("INF")
+        self.ch1_load_combo = QComboBox()
+        self.ch1_load_combo.addItems(["INF", "50"])
+        self.ch1_load_combo.setCurrentText("50")
         self.cycle_period_s = self._double(2000.0, 1.0, 3600000.0, 3)
         self.cycle_period_s.setSuffix(" ms")
         self.sine_ratio_pct = self._double(50.0, 0.0, 100.0, 1)
         self.sine_ratio_pct.setSuffix(" %")
-        common_form.addRow("输出负载", self.load_combo)
+        common_form.addRow("CH1 输出负载", self.ch1_load_combo)
         common_form.addRow("周期时长", self.cycle_period_s)
         common_form.addRow("正弦段占比", self.sine_ratio_pct)
 
@@ -307,14 +297,15 @@ class MainWindow(QMainWindow):
             ch1_vpp=self.ch1_vpp.value(),
             ch1_offset_v=self.ch1_offset.value(),
             ch1_phase_deg=self.ch1_phase.value(),
-            ch2_pulse_width_s=self.ch2_width.value() / 1000.0,
+            ch2_pulse_width_s=1e-6,
             ch2_after_sine_delay_s=self.ch2_after_sine_delay.value() / 1000.0,
             ch2_pulses_per_cycle=self.ch2_pulses_per_cycle.value(),
             ch2_pulse_interval_s=self.ch2_pulse_interval.value() / 1000.0,
-            ch2_low_v=self.ch2_low.value(),
-            ch2_high_v=self.ch2_high.value(),
-            ch2_idle_level=self.ch2_idle_combo.currentText(),
-            output_load=self.load_combo.currentText(),
+            ch2_low_v=0.0,
+            ch2_high_v=5.0,
+            ch2_idle_level="BOTT",
+            ch1_output_load=self.ch1_load_combo.currentText(),
+            ch2_output_load="INF",
         )
 
     def _save_settings(self) -> None:
@@ -323,16 +314,12 @@ class MainWindow(QMainWindow):
         self._settings.setValue("ch1/vpp", self.ch1_vpp.value())
         self._settings.setValue("ch1/offset_v", self.ch1_offset.value())
         self._settings.setValue("ch1/phase_deg", self.ch1_phase.value())
-        self._settings.setValue("ch2/width_ms", self.ch2_width.value())
         self._settings.setValue(
             "ch2/after_sine_delay_ms", self.ch2_after_sine_delay.value()
         )
         self._settings.setValue("ch2/pulses_per_cycle", self.ch2_pulses_per_cycle.value())
         self._settings.setValue("ch2/pulse_interval_ms", self.ch2_pulse_interval.value())
-        self._settings.setValue("ch2/low_v", self.ch2_low.value())
-        self._settings.setValue("ch2/high_v", self.ch2_high.value())
-        self._settings.setValue("ch2/idle_level", self.ch2_idle_combo.currentText())
-        self._settings.setValue("common/load", self.load_combo.currentText())
+        self._settings.setValue("common/ch1_load", self.ch1_load_combo.currentText())
         self._settings.setValue("common/cycle_period_ms", self.cycle_period_s.value())
         self._settings.setValue("common/sine_ratio_pct", self.sine_ratio_pct.value())
 
@@ -361,12 +348,6 @@ class MainWindow(QMainWindow):
         self.ch1_offset.setValue(self._setting_float("ch1/offset_v", self.ch1_offset.value()))
         self.ch1_phase.setValue(self._setting_float("ch1/phase_deg", self.ch1_phase.value()))
 
-        width_ms = self._setting_float("ch2/width_ms", -1.0)
-        if width_ms < 0:
-            width_s = self._setting_float("ch2/width_s", self.ch2_width.value() / 1000.0)
-            width_ms = width_s * 1000.0
-        self.ch2_width.setValue(width_ms)
-
         self.ch2_after_sine_delay.setValue(
             self._setting_float("ch2/after_sine_delay_ms", self.ch2_after_sine_delay.value())
         )
@@ -376,10 +357,7 @@ class MainWindow(QMainWindow):
             self._setting_float("ch2/pulse_interval_ms", self.ch2_pulse_interval.value())
         )
 
-        self.ch2_low.setValue(self._setting_float("ch2/low_v", self.ch2_low.value()))
-        self.ch2_high.setValue(self._setting_float("ch2/high_v", self.ch2_high.value()))
-        self.ch2_idle_combo.setCurrentText(str(self._settings.value("ch2/idle_level", "BOTT")))
-        self.load_combo.setCurrentText(str(self._settings.value("common/load", "INF")))
+        self.ch1_load_combo.setCurrentText(str(self._settings.value("common/ch1_load", "50")))
         cycle_period_ms = self._setting_float("common/cycle_period_ms", -1.0)
         if cycle_period_ms < 0:
             cycle_period_s = self._setting_float(
